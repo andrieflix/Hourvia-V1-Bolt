@@ -1,10 +1,21 @@
-# Proposed Database Schema — For Operator Approval
+# Proposed Database Schema — For Operator Approval (Sprint 1A.1 Remediated)
 
 **Status: PENDING APPROVAL — DO NOT APPLY**
-**Date: 2026-10-23**
+**Date: 2026-10-23 (revised 2026-10-23 — Sprint 1A.1)**
+**Revision: 2 — Security remediations applied to all identified issues**
 
 This document defines the proposed database schema for Hourvia's organization and membership system.
 No migrations will be applied until this schema is reviewed and approved by the operator.
+
+The Sprint 1A.1 revision fixes five security issues identified in the Sprint 1 design:
+1. RLS recursion in membership SELECT policy (fixed via `is_active_member` helper)
+2. Partial unique index only guarantees "at most one" owner, not "exactly one" (fixed via constraint trigger)
+3. Broad UPDATE grant on `user_profiles` (fixed via column-restricted grant)
+4. `create_organization` function needs hardening (fixed: arg validation, slug collision, search_path)
+5. No account deletion safety design (fixed via `prevent_sole_owner_user_deletion` trigger)
+
+The complete SQL migration candidate is in `docs/migration-candidate-create-core-tables.sql`.
+The security audit detailing all findings and remediations is in `docs/sprint-1a1-security-audit.md`.
 
 ---
 
@@ -24,11 +35,11 @@ Stores public profile data linked to authenticated Supabase users.
 
 **Indexes:** None beyond PK.
 
-**Trigger:** `updated_at` auto-update on row modification.
+**Trigger:** `set_updated_at` auto-update on row modification.
 
 ### 1.2 `organizations`
 
-Stores organization records. Ownership is derived from `organization_memberships` (role = 'OWNER'), NOT stored as a column on this table. This prevents clients from setting ownership directly.
+Stores organization records. Ownership is derived from `organization_memberships` (role = 'OWNER', status = 'ACTIVE'), NOT stored as a column on this table. This prevents clients from setting ownership directly.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -60,7 +71,7 @@ Links users to organizations with roles. This is the tenancy boundary table — 
 - Unique index on `(user_id, organization_id)` WHERE `status = 'ACTIVE'` — enforces one active membership per user per org
 - Index on `organization_id` for team listing queries
 - Index on `user_id` for "my organizations" queries
-- **Partial unique index on `(organization_id)` WHERE `role = 'OWNER' AND status = 'ACTIVE'`** — enforces exactly one active owner per org (see Section 4)
+- **Partial unique index on `(organization_id)` WHERE `role = 'OWNER' AND status = 'ACTIVE'`** — enforces at most one active owner per org (see Section 4)
 
 ---
 
@@ -69,7 +80,7 @@ Links users to organizations with roles. This is the tenancy boundary table — 
 ### 2.1 Unique Constraints
 - `organizations.slug` — unique slugs across the platform
 - `organization_memberships(user_id, organization_id)` WHERE `status = 'ACTIVE'` — prevents duplicate active memberships
-- `organization_memberships(organization_id)` WHERE `role = 'OWNER' AND status = 'ACTIVE'` — the single-owner invariant
+- `organization_memberships(organization_id)` WHERE `role = 'OWNER' AND status = 'ACTIVE'` — at-most-one owner (combined with constraint trigger for exactly-one)
 
 ### 2.2 Foreign Keys
 - `user_profiles.id` → `auth.users(id)` ON DELETE CASCADE
@@ -81,6 +92,10 @@ Links users to organizations with roles. This is the tenancy boundary table — 
 - `organization_memberships.role` IN (`'OWNER'`, `'ADMIN'`, `'MANAGER'`, `'EMPLOYEE'`, `'CONTRACTOR'`)
 - `organization_memberships.status` IN (`'ACTIVE'`, `'REVOKED'`, `'PENDING'`)
 
+### 2.4 Constraint Triggers (NEW in Sprint 1A.1)
+- `trg_ensure_single_owner` — AFTER INSERT/UPDATE/DELETE on `organization_memberships`, DEFERRABLE INITIALLY IMMEDIATE. Calls `check_single_owner()` which counts active owners per org and raises `check_violation` if count != 1.
+- `trg_prevent_sole_owner_user_deletion` — BEFORE DELETE on `auth.users`. Calls `check_sole_owner_before_user_delete()` which blocks deletion if the user is the sole owner of any organization.
+
 ---
 
 ## 3. RLS Policy Design
@@ -91,12 +106,14 @@ All three tables enable RLS. Policies scope to `authenticated` only (the app has
 
 | Verb | Policy Name | Predicate |
 |------|-------------|-----------|
-| SELECT | "Users can read own profile" | `auth.uid() = id` |
-| INSERT | "Users can insert own profile" | `auth.uid() = id` (WITH CHECK) |
-| UPDATE | "Users can update own profile" | `auth.uid() = id` (USING + WITH CHECK) |
+| SELECT | "user_profiles_select_own" | `auth.uid() = id` |
+| INSERT | "user_profiles_insert_own" | `auth.uid() = id` (WITH CHECK) |
+| UPDATE | "user_profiles_update_own" | `auth.uid() = id` (USING + WITH CHECK) |
 
-**Grant:** `SELECT, INSERT, UPDATE` on `user_profiles` to `authenticated`.
-Column-restricted UPDATE: `GRANT UPDATE (display_name, avatar_url) ON user_profiles TO authenticated;`
+**Grant:** `SELECT, INSERT` on `user_profiles` to `authenticated`.
+**UPDATE:** Column-restricted — `REVOKE UPDATE` then `GRANT UPDATE (display_name, avatar_url)` to `authenticated`.
+
+**REMEDIATION (Sprint 1A.1):** The Sprint 1 design granted a broad table-level UPDATE, which would let users modify `created_at` and other non-editable columns. The column-restricted grant ensures users can only change `display_name` and `avatar_url`.
 
 ### 3.2 `organizations`
 
@@ -104,9 +121,11 @@ Users can see organizations where they have an active membership. Direct INSERT/
 
 | Verb | Policy Name | Predicate |
 |------|-------------|-----------|
-| SELECT | "Members can view their orgs" | `EXISTS (SELECT 1 FROM organization_memberships WHERE organization_memberships.user_id = auth.uid() AND organization_memberships.organization_id = organizations.id AND organization_memberships.status = 'ACTIVE')` |
+| SELECT | "organizations_select_member" | `public.is_active_member(auth.uid(), organizations.id)` |
 
 **Grant:** `SELECT` on `organizations` to `authenticated` only.
+
+**REMEDIATION (Sprint 1A.1):** The predicate now uses the `is_active_member` SECURITY DEFINER helper instead of an inline subquery on `organization_memberships`. This avoids the RLS recursion documented in Section 5.
 
 ### 3.3 `organization_memberships`
 
@@ -114,141 +133,216 @@ Users can see memberships within organizations they belong to. Direct INSERT/UPD
 
 | Verb | Policy Name | Predicate |
 |------|-------------|-----------|
-| SELECT | "Members can view their org's memberships" | `EXISTS (SELECT 1 FROM organization_memberships AS m WHERE m.user_id = auth.uid() AND m.organization_id = organization_memberships.organization_id AND m.status = 'ACTIVE')` |
+| SELECT | "memberships_select_org_member" | `public.is_active_member(auth.uid(), organization_memberships.organization_id)` |
 
 **Grant:** `SELECT` on `organization_memberships` to `authenticated` only.
+
+**REMEDIATION (Sprint 1A.1):** The Sprint 1 design's SELECT policy queried `organization_memberships` inside its own USING clause, causing infinite recursion. The `is_active_member` helper (SECURITY DEFINER, bypasses RLS) breaks this cycle by returning a boolean without re-entering policy evaluation.
 
 ---
 
 ## 4. Ownership Invariant Enforcement
 
 ### The Problem
-"Exactly one active OWNER per organization" must hold even under concurrent operations. Two concurrent transactions could both try to add a second owner, or both try to remove the only owner.
+"Exactly one active OWNER per organization" must hold even under concurrent operations and all edge cases:
+- Adding a second owner
+- Removing the only owner (revocation)
+- Demoting the only owner (role change)
+- Transferring ownership (atomic old→new swap)
+- User account deletion (cascade)
+- Concurrent transfers
 
-### Solution: Partial Unique Index
+### Solution: Two-Layer Enforcement
+
+#### Layer 1: Partial Unique Index (at-most-one)
 
 ```sql
-CREATE UNIQUE INDEX one_active_owner_per_org
+CREATE UNIQUE INDEX idx_one_active_owner_per_org
   ON organization_memberships (organization_id)
   WHERE role = 'OWNER' AND status = 'ACTIVE';
 ```
 
-This is a **database-enforced** constraint — PostgreSQL will reject any INSERT or UPDATE that would result in zero or two active owners for an organization. It works under concurrent transactions because the unique index is checked at the row-level lock point.
+This prevents two active owners from ever existing for the same org. PostgreSQL checks the unique index at the row-level lock point, so concurrent transactions cannot both add a second owner.
 
-- **Adding a second owner:** Fails with unique violation (the index already has a row for that `organization_id`)
-- **Removing the only owner (revoking):** The `SECURITY DEFINER` function checks that the target is not the owner before allowing revocation. Even if bypassed, revoking the owner would leave zero active owners — which is allowed by the index alone, so the function MUST guard this case.
-- **Transferring ownership:** The `SECURITY DEFINER` transfer function updates the old owner's role and the new owner's role in a single `DO $$ ... END $$` block. The intermediate state (both or neither as owner) is not visible to other transactions within the same atomic block. However, since the unique index is on `role = 'OWNER' AND status = 'ACTIVE'`, the intermediate state where both are owners would violate the index. The function must therefore update the old owner first (removing OWNER role) then set the new owner. If the old owner is updated to a non-OWNER role, the index row is freed, and the new owner can take it.
+#### Layer 2: Constraint Trigger (exactly-one)
+
+```sql
+CREATE CONSTRAINT TRIGGER trg_ensure_single_owner
+  AFTER INSERT OR UPDATE OR DELETE ON organization_memberships
+  DEFERRABLE INITIALLY IMMEDIATE
+  FOR EACH ROW EXECUTE FUNCTION check_single_owner();
+```
+
+The `check_single_owner()` function counts active owners for the affected organization and raises `check_violation` if the count is not exactly 1. This catches the zero-owner case that the index cannot prevent:
+- **Revoking the only owner:** count drops to 0 → rejected
+- **Demoting the only owner:** count drops to 0 → rejected
+- **User deletion cascade:** prevented at the source by `trg_prevent_sole_owner_user_deletion` (BEFORE DELETE on auth.users)
+
+### Why Two Layers?
+The partial unique index alone only guarantees "at most one" — it allows zero. The constraint trigger closes the gap by rejecting zero. Together they enforce "exactly one."
+
+### Transfer Safety
+The `transfer_ownership` function performs both role changes (demote old, promote new) in a single CTE-based UPDATE statement. The constraint trigger is `DEFERRABLE INITIALLY IMMEDIATE`, so it checks at statement end when the count is 1 (new owner exists, old owner demoted). The intermediate state where both or neither are owners is not visible at statement end.
 
 ### Can this be safely enforced with Supabase primitives?
-
-**YES.** Partial unique indexes are a core PostgreSQL feature, fully supported in Supabase. The `SECURITY DEFINER` function pattern is also supported and can be created via the `apply_migration` MCP tool. The combination provides:
-1. Database-enforced uniqueness (no application-level race conditions)
-2. Server-side authorization (no client-controlled role assignment)
-3. Atomic operations within PL/pgSQL blocks
+**YES.** Partial unique indexes, constraint triggers, and SECURITY DEFINER functions are all core PostgreSQL features, fully supported in Supabase.
 
 ---
 
-## 5. Organization Provisioning Transaction Design
+## 5. RLS Recursion Remediation
 
-The `create_organization` `SECURITY DEFINER` function will:
-
-1. Accept `p_name` (text) and `p_slug` (text) parameters
-2. Use `auth.uid()` to get the calling user's ID
-3. Insert a new row into `organizations`
-4. Insert a new row into `organization_memberships` with `role = 'OWNER'`, `status = 'ACTIVE'`
-5. Insert a row into `user_profiles` if one doesn't already exist (upsert)
-6. Return the new organization's ID
-7. All within a single atomic `DO $$ ... END $$` block
+### The Problem (Sprint 1 Design)
+The Sprint 1 membership SELECT policy was:
 
 ```sql
-CREATE OR REPLACE FUNCTION public.create_organization(p_name text, p_slug text)
-RETURNS uuid
-LANGUAGE plpgsql
+-- BROKEN: queries the same table inside its own policy
+USING (EXISTS (
+  SELECT 1 FROM organization_memberships AS m
+  WHERE m.user_id = auth.uid()
+    AND m.organization_id = organization_memberships.organization_id
+    AND m.status = 'ACTIVE'
+))
+```
+
+When PostgreSQL evaluates this SELECT policy on `organization_memberships`, the subquery itself queries `organization_memberships`, which triggers the same SELECT policy again — infinite recursion. The query either errors out or returns zero rows (depending on PostgreSQL's recursion detection).
+
+### The Fix: `is_active_member` SECURITY DEFINER Helper
+
+```sql
+CREATE OR REPLACE FUNCTION public.is_active_member(p_user_id uuid, p_org_id uuid)
+RETURNS boolean
+LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-DECLARE
-  v_org_id uuid;
-  v_user_id uuid := auth.uid();
-BEGIN
-  IF v_user_id IS NULL THEN
-    RAISE EXCEPTION 'Not authenticated';
-  END IF;
-
-  INSERT INTO organizations (name, slug)
-  VALUES (p_name, p_slug)
-  RETURNING id INTO v_org_id;
-
-  INSERT INTO organization_memberships (organization_id, user_id, role, status)
-  VALUES (v_org_id, v_user_id, 'OWNER', 'ACTIVE');
-
-  INSERT INTO user_profiles (id, display_name)
-  VALUES (v_user_id, '')
-  ON CONFLICT (id) DO NOTHING;
-
-  RETURN v_org_id;
-END;
+  SELECT EXISTS (
+    SELECT 1 FROM public.organization_memberships m
+    WHERE m.user_id = p_user_id
+      AND m.organization_id = p_org_id
+      AND m.status = 'ACTIVE'
+  );
 $$;
 
-REVOKE EXECUTE ON FUNCTION public.create_organization(text, text) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.create_organization(text, text) TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.is_active_member(uuid, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.is_active_member(uuid, uuid) TO authenticated;
 ```
 
-### Why SECURITY DEFINER?
-- The `authenticated` role has no INSERT grant on `organizations` or `organization_memberships` directly
-- The function runs with the table owner's permissions, bypassing RLS for the specific operation
-- The function is the ONLY path to create organizations — clients cannot bypass it
+**How it breaks the recursion:**
+- `SECURITY DEFINER` makes the function run as the table owner, bypassing RLS
+- The function queries `organization_memberships` without triggering the SELECT policy
+- The policy calls the function, which returns a boolean — no recursion
+
+**Security properties:**
+- `SET search_path = public` prevents search_path injection
 - `REVOKE EXECUTE FROM PUBLIC, anon` ensures only authenticated users can call it
+- The function takes explicit `p_user_id` and `p_org_id` parameters; callers pass `auth.uid()` (server-derived, not client-supplied)
+
+Both the `organizations` and `organization_memberships` SELECT policies use this helper.
 
 ---
 
-## 6. Rollback and Recovery Implications
+## 6. Organization Provisioning — Hardened `create_organization`
 
-### Migration Safety
-- All `CREATE TABLE` statements use `IF NOT EXISTS`
-- All `CREATE POLICY` statements are preceded by `DROP POLICY IF EXISTS`
-- The migration is idempotent — safe to re-apply if a timeout occurs
-- No `DROP` or `DELETE` operations — no data loss risk
+The `create_organization` SECURITY DEFINER function creates a new org and an OWNER membership for the calling user.
 
-### Recovery Considerations
-- If the migration needs to be reversed, tables can be disabled (RLS set to deny-all) without dropping data
-- `ON DELETE CASCADE` on foreign keys to `auth.users` means deleting a user cascades to their profiles and memberships — this is intentional
-- `ON DELETE CASCADE` on `organization_memberships.organization_id` means deleting an org cascades to its memberships — intentional
-- **Org deletion is NOT granted to `authenticated`** — only a future `SECURITY DEFINER` function (Sprint 2+) will allow it, with ownership verification
+### Hardening Applied (Sprint 1A.1)
 
-### What Cannot Be Reversed Without Data Loss
-- Dropping tables (not planned)
-- Changing column types (not planned)
-- Removing the unique index on owner (would break the invariant)
+| Issue | Sprint 1 | Sprint 1A.1 |
+|-------|----------|-------------|
+| search_path | Set but not documented | Set and documented |
+| Caller validation | `auth.uid()` check | Same + proper SQLSTATE |
+| Name validation | None | Non-empty check (23502) |
+| Slug validation | None | Non-empty + format regex (23514) |
+| Slug collision | Unhandled (raw unique_violation) | Caught, friendly message (23505) |
+| Table references | Unqualified | Schema-qualified (`public.`) |
+| EXECUTE grants | Revoked from PUBLIC/anon | Same |
+| user_profiles upsert | Present | Same |
+
+### Slug Validation Rules
+- Lowercase alphanumeric and hyphens only
+- 3-50 characters
+- Cannot start or end with a hyphen
+- Regex: `^[a-z0-9](?:[a-z0-9\-]{1,48}[a-z0-9])?$`
 
 ---
 
-## 7. Security Posture Summary
+## 7. Account Deletion Safety
+
+### The Problem
+When a user is deleted from `auth.users`, `ON DELETE CASCADE` removes their `organization_memberships` rows. If the user is the sole owner of an org, this leaves the org with zero owners — orphaning it permanently. No one can manage or dissolve the org.
+
+### The Fix: `prevent_sole_owner_user_deletion` Trigger
+
+```sql
+CREATE TRIGGER trg_prevent_sole_owner_user_deletion
+  BEFORE DELETE ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION check_sole_owner_before_user_delete();
+```
+
+The function checks whether the user being deleted is the sole active owner of any organization. If so, it raises `check_violation` and blocks the deletion. The user must transfer ownership (or dissolve the org) before their account can be deleted.
+
+### ON DELETE CASCADE Analysis
+- `user_profiles.id` → `auth.users(id)` ON DELETE CASCADE: Safe — profile data is per-user
+- `organization_memberships.user_id` → `auth.users(id)` ON DELETE CASCADE: Protected by the sole-owner trigger
+- `organization_memberships.organization_id` → `organizations(id)` ON DELETE CASCADE: Safe — deleting an org removes its memberships (org deletion is via SECURITY DEFINER only, not granted to authenticated)
+
+---
+
+## 8. SECURITY DEFINER Functions Summary
+
+| Function | Purpose | Granted to | search_path |
+|----------|---------|-----------|-------------|
+| `is_active_member` | RLS policy helper — breaks recursion | authenticated | public |
+| `create_organization` | Create org + OWNER membership | authenticated | public |
+| `transfer_ownership` | Transfer ownership atomically | NOT YET (Sprint 2) | public |
+| `revoke_membership` | Revoke a member | NOT YET (Sprint 2) | public |
+| `check_single_owner` | Constraint trigger function | trigger-only | public |
+| `check_sole_owner_before_user_delete` | Pre-delete safety trigger | trigger-only | public |
+| `set_updated_at` | Auto-update updated_at | trigger-only | public |
+
+All functions have:
+- `SECURITY DEFINER` (runs as owner, bypasses RLS)
+- `SET search_path = public` (prevents search_path injection)
+- `REVOKE EXECUTE FROM PUBLIC, anon` (not callable by unauthenticated)
+
+---
+
+## 9. Security Posture Summary
 
 | Requirement | Enforcement |
 |-------------|-------------|
 | Server-derived user ID | `auth.uid()` in RLS and SECURITY DEFINER functions |
 | No client-selected roles | No INSERT grant on memberships; role set only by SECURITY DEFINER function |
 | RLS enabled | All three tables have RLS enabled with explicit policies |
-| Tenant-scoped reads | SELECT policies check membership existence |
+| Tenant-scoped reads | SELECT policies use `is_active_member` helper for membership check |
 | Cross-tenant denied | RLS filters rows — no cross-org access possible |
 | Owner assignment protected | Only `create_organization` function can assign OWNER role |
-| Membership revocation respected | Revoked memberships (status = 'REVOKED') fail the `status = 'ACTIVE'` check in all policies |
-| No privileged credentials in browser | Only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in frontend; service role key never exposed |
+| Exactly-one owner | Partial unique index (at-most-one) + constraint trigger (not-zero) |
+| Account deletion safety | `prevent_sole_owner_user_deletion` trigger blocks sole-owner deletion |
+| No RLS recursion | `is_active_member` SECURITY DEFINER helper breaks self-reference |
+| Column-restricted updates | `user_profiles` UPDATE limited to `display_name`, `avatar_url` |
+| Hardened functions | Arg validation, slug collision, search_path, schema-qualified refs |
+| No privileged credentials in browser | Only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in frontend |
 
 ---
 
-## 8. Migration Plan (After Approval)
+## 10. Migration Plan (After Approval)
 
-The migration will be applied as a single `apply_migration` call with the filename `create_core_tables`. It will contain:
+The migration candidate SQL is in `docs/migration-candidate-create-core-tables.sql`.
+It will be applied as a single `apply_migration` call with the filename `create_core_tables`.
 
-1. Create `user_profiles` table with RLS and policies
-2. Create `organizations` table with RLS and SELECT-only policy
-3. Create `organization_memberships` table with RLS and SELECT-only policy
-4. Create the partial unique index for single-owner invariant
-5. Create the `create_organization` SECURITY DEFINER function
-6. Create the `updated_at` trigger function and apply to all tables
-7. Grant appropriate permissions
+It contains:
+1. `set_updated_at` trigger function
+2. `user_profiles` table with RLS, policies, column-restricted grants
+3. `organizations` table with RLS and SELECT-only policy (using `is_active_member`)
+4. `organization_memberships` table with RLS and SELECT-only policy (using `is_active_member`)
+5. `is_active_member` SECURITY DEFINER helper function
+6. `check_single_owner` constraint trigger function + trigger
+7. `check_sole_owner_before_user_delete` trigger function + trigger on auth.users
+8. `create_organization` hardened SECURITY DEFINER function
+9. `transfer_ownership` SECURITY DEFINER function (not yet granted)
+10. `revoke_membership` SECURITY DEFINER function (not yet granted)
+11. All indexes, grants, and EXECUTE revocations
 
 ---
 
@@ -257,8 +351,11 @@ The migration will be applied as a single `apply_migration` call with the filena
 **No database migrations will be applied until the operator reviews and approves this schema design.**
 
 Please confirm:
-1. The table structure and column definitions are acceptable
-2. The RLS policy approach (SELECT-only on orgs/memberships, all mutations via SECURITY DEFINER) is acceptable
-3. The ownership invariant (partial unique index) approach is acceptable
-4. The `create_organization` SECURITY DEFINER function design is acceptable
-5. You authorize the migration to be applied to the provisioned Supabase project
+1. The three-table structure and column definitions are acceptable
+2. The RLS policy approach (SELECT-only on orgs/memberships, mutations via SECURITY DEFINER) is acceptable
+3. The `is_active_member` helper approach for breaking RLS recursion is acceptable
+4. The two-layer ownership invariant (partial unique index + constraint trigger) is acceptable
+5. The account deletion safety (sole-owner prevention trigger) is acceptable
+6. The hardened `create_organization` function (arg validation, slug collision) is acceptable
+7. The column-restricted UPDATE on `user_profiles` is acceptable
+8. You authorize the migration to be applied to the provisioned Supabase project
