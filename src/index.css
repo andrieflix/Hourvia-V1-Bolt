@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-bg: #f8fafc;
+    --color-surface: #ffffff;
+    --color-border: #e2e8f0;
+    --color-text: #0d1521;
+    --color-text-muted: #64748b;
+    --color-sidebar: #0d1521;
+    --color-sidebar-hover: #1e2a3a;
+    --color-sidebar-text: #bcccdc;
+    --color-sidebar-active: #0d9d9d;
+  }
+
+  .dark {
+    --color-bg: #080d16;
+    --color-surface: #0d1521;
+    --color-border: #1e2a3a;
+    --color-text: #e2e8f0;
+    --color-text-muted: #6c7a93;
+    --color-sidebar: #080d16;
+    --color-sidebar-hover: #15202e;
+    --color-sidebar-text: #9fb3c8;
+    --color-sidebar-active: #0d9d9d;
+  }
+
+  html {
+    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  * {
+    border-color: var(--color-border);
+  }
+}
+
+@layer components {
+  .surface {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+  }
+
+  .sidebar-bg {
+    background-color: var(--color-sidebar);
+  }
+
+  .text-muted {
+    color: var(--color-text-muted);
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: rgba(100, 116, 139, 0.3);
+    border-radius: 3px;
+  }
+}
