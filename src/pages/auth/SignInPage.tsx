@@ -1,23 +1,28 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Mail, Lock, ArrowLeft, CircleAlert as AlertCircle } from "lucide-react";
-import { z } from "zod";
 import { Logo, Button, Input } from "../../components/ui";
 import { ThemeSelector } from "../../components/ui/ThemeSelector";
+import { useAuth } from "../../contexts/AuthContext";
+import { signInSchema } from "../../lib/validation";
 
-const signInSchema = z.object({
-  email: z.string().email("Enter a valid email address"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
-});
-
-type SignInFormData = z.infer<typeof signInSchema>;
+type SignInFormData = {
+  email: string;
+  password: string;
+};
 
 export function SignInPage() {
+  const { signIn } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [data, setData] = useState<SignInFormData>({ email: "", password: "" });
   const [errors, setErrors] = useState<Partial<Record<keyof SignInFormData, string>>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const from = (location.state as { from?: string } | null)?.from ?? "/app";
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
     const result = signInSchema.safeParse(data);
@@ -31,7 +36,14 @@ export function SignInPage() {
       return;
     }
     setErrors({});
-    setFormError("Authentication is not yet activated. This is a UI preview only.");
+    setSubmitting(true);
+    const { error } = await signIn(data.email, data.password);
+    setSubmitting(false);
+    if (error) {
+      setFormError(error);
+    } else {
+      navigate(from, { replace: true });
+    }
   };
 
   return (
@@ -60,6 +72,7 @@ export function SignInPage() {
                 error={errors.email}
                 icon={<Mail className="w-4 h-4" />}
                 autoComplete="email"
+                disabled={submitting}
               />
               <Input
                 label="Password"
@@ -70,6 +83,7 @@ export function SignInPage() {
                 error={errors.password}
                 icon={<Lock className="w-4 h-4" />}
                 autoComplete="current-password"
+                disabled={submitting}
               />
               <div className="flex items-center justify-between">
                 <label className="flex items-center gap-2 text-sm text-muted cursor-pointer">
@@ -81,12 +95,14 @@ export function SignInPage() {
                 </Link>
               </div>
               {formError && (
-                <div className="flex items-start gap-2 rounded-lg bg-warning-50 dark:bg-warning-900/30 px-3 py-2.5 text-sm text-warning-700 dark:text-warning-300">
+                <div className="flex items-start gap-2 rounded-lg bg-error-50 dark:bg-error-900/30 px-3 py-2.5 text-sm text-error-700 dark:text-error-300">
                   <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                   <span>{formError}</span>
                 </div>
               )}
-              <Button type="submit" fullWidth size="lg">Sign in</Button>
+              <Button type="submit" fullWidth size="lg" disabled={submitting}>
+                {submitting ? "Signing in…" : "Sign in"}
+              </Button>
             </form>
             <p className="mt-6 text-center text-sm text-muted">
               Don't have an account?{" "}
@@ -95,9 +111,6 @@ export function SignInPage() {
               </Link>
             </p>
           </div>
-          <p className="mt-4 text-center text-xs text-muted">
-            Authentication is UI-only until the Bolt authentication integration is reviewed and activated.
-          </p>
         </div>
       </div>
     </div>

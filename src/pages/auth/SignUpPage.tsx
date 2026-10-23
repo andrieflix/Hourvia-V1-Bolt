@@ -1,27 +1,29 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import { Mail, Lock, User, ArrowLeft, CircleAlert as AlertCircle } from "lucide-react";
-import { z } from "zod";
+import { Link, useNavigate } from "react-router-dom";
+import { Mail, Lock, User, ArrowLeft, CircleAlert as AlertCircle, CircleCheck as CheckCircle } from "lucide-react";
 import { Logo, Button, Input } from "../../components/ui";
 import { ThemeSelector } from "../../components/ui/ThemeSelector";
+import { useAuth } from "../../contexts/AuthContext";
+import { signUpSchema } from "../../lib/validation";
 
-const signUpSchema = z.object({
-  displayName: z.string().min(2, "Name must be at least 2 characters"),
-  email: z.string().email("Enter a valid email address"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
-  organizationName: z.string().min(2, "Organization name must be at least 2 characters"),
-});
-
-type SignUpFormData = z.infer<typeof signUpSchema>;
+type SignUpFormData = {
+  displayName: string;
+  email: string;
+  password: string;
+  organizationName: string;
+};
 
 export function SignUpPage() {
+  const { signUp } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState<SignUpFormData>({
     displayName: "", email: "", password: "", organizationName: "",
   });
   const [errors, setErrors] = useState<Partial<Record<keyof SignUpFormData, string>>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
     const result = signUpSchema.safeParse(data);
@@ -35,7 +37,14 @@ export function SignUpPage() {
       return;
     }
     setErrors({});
-    setFormError("Authentication is not yet activated. This is a UI preview only.");
+    setSubmitting(true);
+    const { error } = await signUp(data.email, data.password, data.displayName);
+    setSubmitting(false);
+    if (error) {
+      setFormError(error);
+    } else {
+      navigate("/app", { replace: true });
+    }
   };
 
   return (
@@ -64,6 +73,7 @@ export function SignUpPage() {
                 error={errors.displayName}
                 icon={<User className="w-4 h-4" />}
                 autoComplete="name"
+                disabled={submitting}
               />
               <Input
                 label="Organization name"
@@ -73,7 +83,12 @@ export function SignUpPage() {
                 onChange={(e) => setData({ ...data, organizationName: e.target.value })}
                 error={errors.organizationName}
                 icon={<User className="w-4 h-4" />}
+                disabled={submitting}
               />
+              <div className="flex items-start gap-2 rounded-lg bg-teal-50 dark:bg-teal-950/50 px-3 py-2 text-xs text-teal-700 dark:text-teal-300">
+                <CheckCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                <span>Your organization will be created after sign-up. You'll be the OWNER.</span>
+              </div>
               <Input
                 label="Email"
                 type="email"
@@ -83,6 +98,7 @@ export function SignUpPage() {
                 error={errors.email}
                 icon={<Mail className="w-4 h-4" />}
                 autoComplete="email"
+                disabled={submitting}
               />
               <Input
                 label="Password"
@@ -93,14 +109,17 @@ export function SignUpPage() {
                 error={errors.password}
                 icon={<Lock className="w-4 h-4" />}
                 autoComplete="new-password"
+                disabled={submitting}
               />
               {formError && (
-                <div className="flex items-start gap-2 rounded-lg bg-warning-50 dark:bg-warning-900/30 px-3 py-2.5 text-sm text-warning-700 dark:text-warning-300">
+                <div className="flex items-start gap-2 rounded-lg bg-error-50 dark:bg-error-900/30 px-3 py-2.5 text-sm text-error-700 dark:text-error-300">
                   <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                   <span>{formError}</span>
                 </div>
               )}
-              <Button type="submit" fullWidth size="lg">Create account</Button>
+              <Button type="submit" fullWidth size="lg" disabled={submitting}>
+                {submitting ? "Creating account…" : "Create account"}
+              </Button>
             </form>
             <p className="mt-6 text-center text-sm text-muted">
               Already have an account?{" "}
@@ -109,9 +128,6 @@ export function SignUpPage() {
               </Link>
             </p>
           </div>
-          <p className="mt-4 text-center text-xs text-muted">
-            Authentication is UI-only until the Bolt authentication integration is reviewed and activated.
-          </p>
         </div>
       </div>
     </div>

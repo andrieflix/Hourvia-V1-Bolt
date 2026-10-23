@@ -4,51 +4,44 @@ import {
   validateMembershipRevocation,
   validateOrgSwitch,
   ensureSingleOwner,
+  getOwnerUserId,
 } from "../organization";
-import type { Membership, Organization } from "../types";
-
-const org: Organization = {
-  id: "org-1",
-  name: "Acme Studios",
-  slug: "acme-studios",
-  ownerId: "user-1",
-  createdAt: "2026-01-01T00:00:00Z",
-};
+import type { Membership } from "../types";
 
 const memberships: Membership[] = [
-  { id: "m-1", userId: "user-1", organizationId: "org-1", role: "OWNER", status: "ACTIVE", createdAt: "2026-01-01T00:00:00Z" },
-  { id: "m-2", userId: "user-2", organizationId: "org-1", role: "ADMIN", status: "ACTIVE", createdAt: "2026-01-02T00:00:00Z" },
-  { id: "m-3", userId: "user-3", organizationId: "org-1", role: "EMPLOYEE", status: "ACTIVE", createdAt: "2026-01-03T00:00:00Z" },
-  { id: "m-4", userId: "user-4", organizationId: "org-1", role: "CONTRACTOR", status: "REVOKED", createdAt: "2026-01-04T00:00:00Z" },
+  { id: "m-1", userId: "user-1", organizationId: "org-1", role: "OWNER", status: "ACTIVE", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+  { id: "m-2", userId: "user-2", organizationId: "org-1", role: "ADMIN", status: "ACTIVE", createdAt: "2026-01-02T00:00:00Z", updatedAt: "2026-01-02T00:00:00Z" },
+  { id: "m-3", userId: "user-3", organizationId: "org-1", role: "EMPLOYEE", status: "ACTIVE", createdAt: "2026-01-03T00:00:00Z", updatedAt: "2026-01-03T00:00:00Z" },
+  { id: "m-4", userId: "user-4", organizationId: "org-1", role: "CONTRACTOR", status: "REVOKED", createdAt: "2026-01-04T00:00:00Z", updatedAt: "2026-01-04T00:00:00Z" },
 ];
 
 describe("Organization ownership invariants", () => {
   describe("validateOwnershipTransfer", () => {
     it("allows owner to transfer to an active admin member", () => {
-      const result = validateOwnershipTransfer(org, memberships, "user-2", "user-1", "OWNER");
+      const result = validateOwnershipTransfer("org-1", memberships, "user-2", "OWNER");
       expect(result.success).toBe(true);
       expect(result.newOwnerId).toBe("user-2");
     });
 
     it("rejects transfer by non-owner", () => {
-      const result = validateOwnershipTransfer(org, memberships, "user-2", "user-2", "ADMIN");
+      const result = validateOwnershipTransfer("org-1", memberships, "user-2", "ADMIN");
       expect(result.success).toBe(false);
       expect(result.error).toContain("Only the current owner");
     });
 
     it("rejects transfer to self", () => {
-      const result = validateOwnershipTransfer(org, memberships, "user-1", "user-1", "OWNER");
+      const result = validateOwnershipTransfer("org-1", memberships, "user-1", "OWNER");
       expect(result.success).toBe(false);
     });
 
     it("rejects transfer to non-member", () => {
-      const result = validateOwnershipTransfer(org, memberships, "user-999", "user-1", "OWNER");
+      const result = validateOwnershipTransfer("org-1", memberships, "user-999", "OWNER");
       expect(result.success).toBe(false);
       expect(result.error).toContain("active member");
     });
 
     it("rejects transfer to revoked member", () => {
-      const result = validateOwnershipTransfer(org, memberships, "user-4", "user-1", "OWNER");
+      const result = validateOwnershipTransfer("org-1", memberships, "user-4", "OWNER");
       expect(result.success).toBe(false);
     });
   });
@@ -69,11 +62,22 @@ describe("Organization ownership invariants", () => {
 
     it("invalid when two owners", () => {
       const twoOwners: Membership[] = [...memberships, {
-        id: "m-5", userId: "user-5", organizationId: "org-1", role: "OWNER", status: "ACTIVE", createdAt: "2026-01-05T00:00:00Z",
+        id: "m-5", userId: "user-5", organizationId: "org-1", role: "OWNER", status: "ACTIVE", createdAt: "2026-01-05T00:00:00Z", updatedAt: "2026-01-05T00:00:00Z",
       }];
       const result = ensureSingleOwner(twoOwners);
       expect(result.valid).toBe(false);
       expect(result.ownerCount).toBe(2);
+    });
+  });
+
+  describe("getOwnerUserId", () => {
+    it("returns the owner's user ID", () => {
+      expect(getOwnerUserId(memberships, "org-1")).toBe("user-1");
+    });
+
+    it("returns null when no owner", () => {
+      const noOwner = memberships.filter((m) => m.role !== "OWNER");
+      expect(getOwnerUserId(noOwner, "org-1")).toBe(null);
     });
   });
 });
@@ -115,9 +119,9 @@ describe("Membership revocation", () => {
 
 describe("Organization switching boundaries", () => {
   it("allows switching to an org with active membership", () => {
-    const userMemberships = [
+    const userMemberships: Membership[] = [
       ...memberships,
-      { id: "m-10", userId: "user-1", organizationId: "org-2", role: "MANAGER" as const, status: "ACTIVE" as const, createdAt: "2026-01-06T00:00:00Z" },
+      { id: "m-10", userId: "user-1", organizationId: "org-2", role: "MANAGER", status: "ACTIVE", createdAt: "2026-01-06T00:00:00Z", updatedAt: "2026-01-06T00:00:00Z" },
     ];
     const result = validateOrgSwitch("org-1", "org-2", userMemberships);
     expect(result.success).toBe(true);
@@ -135,9 +139,9 @@ describe("Organization switching boundaries", () => {
   });
 
   it("prevents switching to org with revoked membership", () => {
-    const userMemberships = [
+    const userMemberships: Membership[] = [
       ...memberships,
-      { id: "m-11", userId: "user-1", organizationId: "org-2", role: "MANAGER" as const, status: "REVOKED" as const, createdAt: "2026-01-07T00:00:00Z" },
+      { id: "m-11", userId: "user-1", organizationId: "org-2", role: "MANAGER", status: "REVOKED", createdAt: "2026-01-07T00:00:00Z", updatedAt: "2026-01-07T00:00:00Z" },
     ];
     const result = validateOrgSwitch("org-1", "org-2", userMemberships);
     expect(result.success).toBe(false);

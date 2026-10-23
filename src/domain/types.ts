@@ -2,29 +2,34 @@ export type Role = "OWNER" | "ADMIN" | "MANAGER" | "EMPLOYEE" | "CONTRACTOR";
 
 export type MembershipStatus = "ACTIVE" | "REVOKED" | "PENDING";
 
+export type OrganizationStatus = "ACTIVE" | "SUSPENDED";
+
 export interface User {
   id: string;
   email: string;
   displayName: string;
   avatarUrl?: string;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface Organization {
   id: string;
   name: string;
   slug: string;
-  ownerId: string;
+  status: OrganizationStatus;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface Membership {
   id: string;
-  userId: string;
   organizationId: string;
+  userId: string;
   role: Role;
   status: MembershipStatus;
   createdAt: string;
+  updatedAt: string;
   revokedAt?: string;
 }
 

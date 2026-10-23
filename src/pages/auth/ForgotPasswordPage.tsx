@@ -1,27 +1,33 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Mail, ArrowLeft, CircleAlert as AlertCircle, CircleCheck as CheckCircle } from "lucide-react";
-import { z } from "zod";
+import { Mail, ArrowLeft, CircleAlert as AlertCircle, CircleCheck as CheckCircle, Loader2 } from "lucide-react";
 import { Logo, Button, Input } from "../../components/ui";
 import { ThemeSelector } from "../../components/ui/ThemeSelector";
-
-const forgotSchema = z.object({
-  email: z.string().email("Enter a valid email address"),
-});
+import { useAuth } from "../../contexts/AuthContext";
+import { forgotPasswordSchema } from "../../lib/validation";
 
 export function ForgotPasswordPage() {
+  const { resetPassword } = useAuth();
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | undefined>();
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const result = forgotSchema.safeParse({ email });
+    const result = forgotPasswordSchema.safeParse({ email });
     if (!result.success) {
       setError(result.error.issues[0].message);
       return;
     }
     setError(undefined);
+    setSubmitting(true);
+    const { error: authError } = await resetPassword(email);
+    setSubmitting(false);
+    if (authError) {
+      setError(authError);
+      return;
+    }
     setSubmitted(true);
   };
 
@@ -48,9 +54,6 @@ export function ForgotPasswordPage() {
                   If an account exists for <span className="font-medium" style={{ color: "var(--color-text)" }}>{email}</span>,
                   you'll receive a password reset link shortly.
                 </p>
-                <p className="mt-4 text-xs text-muted">
-                  Password reset is UI-only until authentication is activated.
-                </p>
                 <Link to="/signin" className="mt-6 inline-block">
                   <Button variant="outline">Back to sign in</Button>
                 </Link>
@@ -66,12 +69,21 @@ export function ForgotPasswordPage() {
                   error={error}
                   icon={<Mail className="w-4 h-4" />}
                   autoComplete="email"
+                  disabled={submitting}
                 />
-                <div className="flex items-start gap-2 rounded-lg bg-warning-50 dark:bg-warning-900/30 px-3 py-2.5 text-sm text-warning-700 dark:text-warning-300">
-                  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                  <span>Password reset is UI-only until authentication is activated.</span>
-                </div>
-                <Button type="submit" fullWidth size="lg">Send reset link</Button>
+                {error && (
+                  <div className="flex items-start gap-2 rounded-lg bg-error-50 dark:bg-error-900/30 px-3 py-2.5 text-sm text-error-700 dark:text-error-300">
+                    <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+                <Button type="submit" fullWidth size="lg" disabled={submitting}>
+                  {submitting ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Sending reset link…</>
+                  ) : (
+                    "Send reset link"
+                  )}
+                </Button>
               </form>
             )}
             {!submitted && (

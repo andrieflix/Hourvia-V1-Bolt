@@ -1,4 +1,4 @@
-import type { Membership, Organization, Role } from "./types";
+import type { Membership, Role } from "./types";
 import { canManageRole } from "./permissions";
 
 export interface OwnershipTransferResult {
@@ -8,29 +8,31 @@ export interface OwnershipTransferResult {
 }
 
 export function validateOwnershipTransfer(
-  org: Organization,
+  organizationId: string,
   memberships: Membership[],
   newOwnerId: string,
-  _actorId: string,
   actorRole: Role
 ): OwnershipTransferResult {
   if (actorRole !== "OWNER") {
     return { success: false, error: "Only the current owner can transfer ownership" };
   }
 
-  if (newOwnerId === org.ownerId) {
+  const currentOwner = memberships.find(
+    (m) => m.organizationId === organizationId && m.role === "OWNER" && m.status === "ACTIVE"
+  );
+  if (!currentOwner) {
+    return { success: false, error: "No active owner found for this organization" };
+  }
+
+  if (newOwnerId === currentOwner.userId) {
     return { success: false, error: "Cannot transfer ownership to the current owner" };
   }
 
   const targetMembership = memberships.find(
-    (m) => m.userId === newOwnerId && m.organizationId === org.id && m.status === "ACTIVE"
+    (m) => m.userId === newOwnerId && m.organizationId === organizationId && m.status === "ACTIVE"
   );
   if (!targetMembership) {
     return { success: false, error: "Target user must be an active member of this organization" };
-  }
-
-  if (!canManageRole(actorRole, targetMembership.role)) {
-    return { success: false, error: "Cannot transfer ownership to a user with an incompatible role" };
   }
 
   return { success: true, newOwnerId };
@@ -82,4 +84,11 @@ export function validateOrgSwitch(
 export function ensureSingleOwner(memberships: Membership[]): { valid: boolean; ownerCount: number } {
   const activeOwners = memberships.filter((m) => m.role === "OWNER" && m.status === "ACTIVE");
   return { valid: activeOwners.length === 1, ownerCount: activeOwners.length };
+}
+
+export function getOwnerUserId(memberships: Membership[], organizationId: string): string | null {
+  const owner = memberships.find(
+    (m) => m.organizationId === organizationId && m.role === "OWNER" && m.status === "ACTIVE"
+  );
+  return owner?.userId ?? null;
 }

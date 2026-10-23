@@ -6,9 +6,18 @@ import {
   SYNTHETIC_WEEK_DATA, SYNTHETIC_QUICK_CARDS
 } from "../../data/synthetic";
 import { formatHoursDecimal } from "../../domain/time";
+import { useAuth } from "../../contexts/AuthContext";
+import { useOrganization } from "../../contexts/OrganizationContext";
 
 export function DashboardPage() {
+  const { user } = useAuth();
+  const { activeOrganization } = useOrganization();
   const maxHours = Math.max(...SYNTHETIC_WEEK_DATA.map((d) => d.hours));
+
+  const displayName =
+    (user?.user_metadata?.display_name as string | undefined) ??
+    (user?.email ? user.email.split("@")[0] : "there");
+  const orgName = activeOrganization?.name ?? "your organization";
 
   return (
     <div className="animate-fade-in space-y-6">
@@ -18,7 +27,7 @@ export function DashboardPage() {
             <h1 className="text-2xl font-bold" style={{ color: "var(--color-text)" }}>Overview</h1>
             <Badge variant="preview">Synthetic data</Badge>
           </div>
-          <p className="text-sm text-muted mt-0.5">Welcome back, Jane. Here's your week at a glance.</p>
+          <p className="text-sm text-muted mt-0.5">Welcome back, {displayName}. Here's your week at a glance in {orgName}.</p>
         </div>
       </div>
 
